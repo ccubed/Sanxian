@@ -17,7 +17,8 @@ class Sanxian(discord.Client):
         self.queues = {}
         self.prefixes = {}
         self.channel = {}
-        self.commands = [['play', self.enqueue], ['queue', self.show_queue]]
+        self.commands = [['play', self.enqueue], ['queue', self.show_queue], ['join', self.join_voice], ['rejoin', self.rejoin], ['setnotice', self.set_notices],
+                         ['setvoice', self.set_voice], ['q', self.show_queue], ['now playing', self.now_playing], ['np', self.now_playing]]
         rcon = redis.StrictRedis(db='5', encoding='utf-8')
         test = rcon.exists('Prefixes')
         if test:
@@ -66,12 +67,33 @@ class Sanxian(discord.Client):
             self.queues[message.server.id] = []
         if 'entries' in jsd:  #Playlist
             for x in jsd['entries']:
-                self.queues[message.server.id].append([x['title'], x['webpage_url'], x['duration']])
+                if x['duration'] < 900:
+                    self.queues[message.server.id].append([x['title'], x['webpage_url'], x['duration']])
+            if message.server.id in self.voice and self.voice[message.server.id].is_connected():
+                if message.server.id not in self.players and message.server.id in self.voice:
+                    data = self.queues[message.server.id].pop(0)
+                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=self.play_next(message.server))
+                    self.players[message.server.id].start()
+                elif message.server.id in self.players and self.players[message.server.id].is_done():
+                    data = self.queues[message.server.id].pop(0)
+                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=self.play_next(message.server))
+                    self.players[message.server.id].start()
             return '<{}> linked to a playlist called {} with {} tracks and a playtime of {}.'.format(url, jsd['title'],
                                                                                                              len(jsd['entries']),
                                                                                                              timedelta(seconds=sum([x['duration'] for x in jsd['entries']])))
         else:  #Single video
+            if jsd['duration'] > 900:
+                return "No songs over 15 minutes."
             self.queues[message.server.id].append([jsd['title'], jsd['webpage_url'], jsd['duration']])
+            if message.server.id in self.voice and self.voice[message.server.id].is_connected():
+                if message.server.id not in self.players:
+                    data = self.queues[message.server.id].pop(0)
+                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=self.play_next(message.server))
+                    self.players[message.server.id].start()
+                elif message.server.id in self.players and self.players[message.server.id].is_done():
+                    data = self.queues[message.server.id].pop(0)
+                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=self.play_next(message.server))
+                    self.players[message.server.id].start()
             return '<{}> linked to a video called {} with a playtime of {}.'.format(url, jsd['title'],
                                                                                             timedelta(seconds=jsd['duration']))
 
@@ -93,8 +115,9 @@ class Sanxian(discord.Client):
         else:
             for idx, x in enumerate(self.queues[message.server.id][:10]):
                 messages.append("{}. {} [{}]".format(idx+1, x[0], x[2]))
-            messages.append("1 - 10 of {}  -  Page 1 of {}  -  Use queue:# for pages".format(len(self.queues[message.server.id]),
-                                                                                         math.ceil(len(self.queues[message.server.id])/10)))
+            messages.append("1 - {} of {}  -  Page 1 of {}  -  Use queue:# for pages".format(10 if 10 <= len(self.queues[message.server.id]) else len(self.queues[message.server.id]),
+                                                                                             len(self.queues[message.server.id]),
+                                                                                             math.ceil(len(self.queues[message.server.id])/10)))
             return messages
 
     async def rejoin(self, message):
@@ -139,6 +162,9 @@ class Sanxian(discord.Client):
                 self.channel[message.server.id] = {'notice': vchan}
         return "Default now playing notice channel is {}".format(name)
 
+    async def now_playing(self, message):
+        if message.server.id in self.players and not self.players[message.server.id].is_done():
+            return "{} [{}]".format()
 
     async def join_voice(self, message):
         if message.server.id in self.voice and self.voice[message.server.id].is_connected() and not message.channel.permissions_for(message.author).manage_server:
@@ -165,16 +191,17 @@ class Sanxian(discord.Client):
                     return "Moved to a new voice channel. Now in {}.".format(vchan)
             else:
                 self.voice[message.server.id] = await self.join_voice_channel(vchan)
-                self.voice[message.server.id].encoder_options(sample_rate=320, channels=2)
         if message.server.id in self.queues and len(self.queues[message.server.id]) and message.server.id not in self.players:
             data = self.queues[message.server.id].pop(0)
             self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=self.play_next(message.server))
+            self.players[message.server.id].start()
             if message.server.id in self.channel and 'notice' in self.channel[message.server.id]:
                 await self.send_message(self.channel[message.server.id]['notice'], "Now playing {} [{}]".format(data[0], timedelta(seconds=data[2])))
             else:
                 return "Now playing {} [{}]".format(data[0], timedelta(seconds=data[2]))
 
     def play_next(self, server):
+        print("Made it")
         if server.id in self.queues and len(self.queues[server.id]):
             self.loop.create_task(self.new_song(server))
 
