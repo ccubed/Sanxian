@@ -1,4 +1,5 @@
 import youtube_dl
+import functools
 import math
 import subprocess
 import asyncio
@@ -50,6 +51,7 @@ class Sanxian(discord.Client):
                                 await self.send_message(message.channel, x)
                         else:
                             await self.send_message(message.channel, attempt)
+                    break
 
     async def enqueue(self, message):
         prefix = 'yinyue ' if message.server.id not in self.prefixes else self.prefixes[message.server.id]
@@ -72,11 +74,11 @@ class Sanxian(discord.Client):
             if message.server.id in self.voice and self.voice[message.server.id].is_connected():
                 if message.server.id not in self.players and message.server.id in self.voice:
                     data = self.queues[message.server.id].pop(0)
-                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=self.play_next(message.server))
+                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=functools.partial(self.play_next,message.server))
                     self.players[message.server.id].start()
                 elif message.server.id in self.players and self.players[message.server.id].is_done():
                     data = self.queues[message.server.id].pop(0)
-                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=self.play_next(message.server))
+                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=functools.partial(self.play_next,message.server))
                     self.players[message.server.id].start()
             return '<{}> linked to a playlist called {} with {} tracks and a playtime of {}.'.format(url, jsd['title'],
                                                                                                              len(jsd['entries']),
@@ -88,11 +90,11 @@ class Sanxian(discord.Client):
             if message.server.id in self.voice and self.voice[message.server.id].is_connected():
                 if message.server.id not in self.players:
                     data = self.queues[message.server.id].pop(0)
-                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=self.play_next(message.server))
+                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=functools.partial(self.play_next,message.server))
                     self.players[message.server.id].start()
                 elif message.server.id in self.players and self.players[message.server.id].is_done():
                     data = self.queues[message.server.id].pop(0)
-                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=self.play_next(message.server))
+                    self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=functools.partial(self.play_next,message.server))
                     self.players[message.server.id].start()
             return '<{}> linked to a video called {} with a playtime of {}.'.format(url, jsd['title'],
                                                                                             timedelta(seconds=jsd['duration']))
@@ -164,7 +166,7 @@ class Sanxian(discord.Client):
 
     async def now_playing(self, message):
         if message.server.id in self.players and not self.players[message.server.id].is_done():
-            return "{} [{}]".format()
+            return "{} [{}]".format(self.players[message.server.id].title, timedelta(seconds=self.players[message.server.id].duration))
 
     async def join_voice(self, message):
         if message.server.id in self.voice and self.voice[message.server.id].is_connected() and not message.channel.permissions_for(message.author).manage_server:
@@ -193,7 +195,7 @@ class Sanxian(discord.Client):
                 self.voice[message.server.id] = await self.join_voice_channel(vchan)
         if message.server.id in self.queues and len(self.queues[message.server.id]) and message.server.id not in self.players:
             data = self.queues[message.server.id].pop(0)
-            self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=self.play_next(message.server))
+            self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=functools.partial(self.play_next,message.server))
             self.players[message.server.id].start()
             if message.server.id in self.channel and 'notice' in self.channel[message.server.id]:
                 await self.send_message(self.channel[message.server.id]['notice'], "Now playing {} [{}]".format(data[0], timedelta(seconds=data[2])))
@@ -201,16 +203,15 @@ class Sanxian(discord.Client):
                 return "Now playing {} [{}]".format(data[0], timedelta(seconds=data[2]))
 
     def play_next(self, server):
-        print("Made it")
         if server.id in self.queues and len(self.queues[server.id]):
             self.loop.create_task(self.new_song(server))
 
     async def new_song(self, server):
         data = self.queues[server.id].pop(0)
-        self.players[server.id] = await self.voice[server.id].create_ytdl_player(data[1], after=self.play_next(server))
+        self.players[server.id] = await self.voice[server.id].create_ytdl_player(data[1], after=functools.partial(self.play_next, server))
+        self.players[server.id].start()
         if server.id in self.channel and 'notice' in self.channel[server.id]:
             await self.send_message(self.channel[server.id]['notice'], "Now playing {} [{}]".format(data[0], timedelta(seconds=data[2])))
-
 
 if __name__ == "__main__":
     Sanxian_Instance = Sanxian()
