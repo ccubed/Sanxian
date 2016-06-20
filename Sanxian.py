@@ -13,8 +13,10 @@ class Sanxian(discord.Client):
     def __init__(self):
         super().__init__()
         self.voice = {}
+        self.players = {}
         self.queues = {}
         self.prefixes = {}
+        self.channel = {}
         self.commands = [['play', self.enqueue], ['queue', self.show_queue]]
         rcon = redis.StrictRedis(db='5', encoding='utf-8')
         test = rcon.exists('Prefixes')
@@ -49,7 +51,11 @@ class Sanxian(discord.Client):
                             await self.send_message(message.channel, attempt)
 
     async def enqueue(self, message):
-        url = message.content.split()[2]
+        prefix = 'yinyue ' if message.server.id not in self.prefixes else self.prefixes[message.server.id]
+        if ' ' in prefix:
+            url = message.content.split()[2]
+        else:
+            url = message.content.split()[1]
         ytdl = await asyncio.create_subprocess_exec('youtube-dl', '-q', '-s', '--skip-download', '-J', url, stdout=asyncio.subprocess.PIPE)
         await self.send_message(message.channel, "Downloading information on <{}>".format(url))
         stdout, _ = await ytdl.communicate()
@@ -90,6 +96,94 @@ class Sanxian(discord.Client):
             messages.append("1 - 10 of {}  -  Page 1 of {}  -  Use queue:# for pages".format(len(self.queues[message.server.id]),
                                                                                          math.ceil(len(self.queues[message.server.id])/10)))
             return messages
+
+    async def rejoin(self, message):
+        if message.server.id in self.channel and 'voice' in self.channel[message.server.id]:
+            self.voice[message.server.id] = await self.join_voice_channel(self.channel[message.server.id]['voice'])
+        else:
+            return "You need to set the default voice channel to use rejoin. For now use join."
+
+    async def set_voice(self, message):
+        if not message.channel.permissions_for(message.author).manage_server:
+            return "Permissions not granted"
+        prefix = 'yinyue ' if message.server.id not in self.prefixes else self.prefixes[message.server.id]
+        if ' ' in prefix:
+            name = " ".join(message.content.split()[2:])
+        else:
+            name = " ".join(message.content.split()[1:])
+        vchan = discord.utils.get(message.server.channels, name=name, type=discord.ChannelType.voice)
+        if vchan is None:
+            return "Couldn't find a voice channel by that name."
+        else:
+            if message.server.id in self.channel:
+                self.channel[message.server.id]['voice'] = vchan
+            else:
+                self.channel[message.server.id] = {'voice': vchan}
+        return "Default voice channel is now {}".format(name)
+
+    async def set_notices(self, message):
+        if not message.channel.permissions_for(message.author).manage_server:
+            return "Permissions not granted"
+        prefix = 'yinyue ' if message.server.id not in self.prefixes else self.prefixes[message.server.id]
+        if ' ' in prefix:
+            name = " ".join(message.content.split()[2:])
+        else:
+            name = " ".join(message.content.split()[1:])
+        vchan = discord.utils.get(message.server.channels, name=name, type=discord.ChannelType.text)
+        if vchan is None:
+            return "Couldn't find a voice channel by that name."
+        else:
+            if message.server.id in self.channel:
+                self.channel[message.server.id]['notice'] = vchan
+            else:
+                self.channel[message.server.id] = {'notice': vchan}
+        return "Default now playing notice channel is {}".format(name)
+
+
+    async def join_voice(self, message):
+        if message.server.id in self.voice and self.voice[message.server.id].is_connected() and not message.channel.permissions_for(message.author).manage_server:
+            return "I'm already connected to a voice channel."
+        prefix = 'yinyue ' if message.server.id not in self.prefixes else self.prefixes[message.server.id]
+        if ' ' in prefix:
+            channel = " ".join(message.content.split()[2:])
+        else:
+            channel = " ".join(message.content.split()[1:])
+        vchan = discord.utils.get(message.server.channels, name=channel, type=discord.ChannelType.voice)
+        if vchan is None:
+            return "{} didn't match a voice channel.".format(channel)
+        else:
+            if message.server.id in self.voice:
+                if message.server.id in self.players and self.players[message.server.id].is_playing():
+                    self.channel[message.server.id]['voice'] = vchan
+                    self.players[message.server.id].pause()
+                    await self.voice[message.server.id].move_to(vchan)
+                    self.players[message.server.id].resume()
+                    return "Moved to a new voice channel. Now in {}. Resuming play.".format(vchan)
+                else:
+                    self.channel[message.server.id] = {'voice': vchan}
+                    await self.voice[message.server.id].move_to(vchan)
+                    return "Moved to a new voice channel. Now in {}.".format(vchan)
+            else:
+                self.voice[message.server.id] = await self.join_voice_channel(vchan)
+                self.voice[message.server.id].encoder_options(sample_rate=320, channels=2)
+        if message.server.id in self.queues and len(self.queues[message.server.id]) and message.server.id not in self.players:
+            data = self.queues[message.server.id].pop(0)
+            self.players[message.server.id] = await self.voice[message.server.id].create_ytdl_player(data[1], after=self.play_next(message.server))
+            if message.server.id in self.channel and 'notice' in self.channel[message.server.id]:
+                await self.send_message(self.channel[message.server.id]['notice'], "Now playing {} [{}]".format(data[0], timedelta(seconds=data[2])))
+            else:
+                return "Now playing {} [{}]".format(data[0], timedelta(seconds=data[2]))
+
+    def play_next(self, server):
+        if server.id in self.queues and len(self.queues[server.id]):
+            self.loop.create_task(self.new_song(server))
+
+    async def new_song(self, server):
+        data = self.queues[server.id].pop(0)
+        self.players[server.id] = await self.voice[server.id].create_ytdl_player(data[1], after=self.play_next(server))
+        if server.id in self.channel and 'notice' in self.channel[server.id]:
+            await self.send_message(self.channel[server.id]['notice'], "Now playing {} [{}]".format(data[0], timedelta(seconds=data[2])))
+
 
 if __name__ == "__main__":
     Sanxian_Instance = Sanxian()
